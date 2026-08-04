@@ -45,6 +45,14 @@ create_jackpot() { # create_jackpot <name> <initialPool> <contributionPct> <winC
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'
 }
 
+create_capped_jackpot() { # create_capped_jackpot <name> <initialPool> <pct> <maxContribution> <winChancePct>
+  curl -sf -X POST "$BASE_URL/api/jackpots" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$1\",\"initialPoolAmount\":$2,
+         \"contribution\":{\"type\":\"CAPPED\",\"percentage\":$3,\"maxContribution\":$4},
+         \"reward\":{\"type\":\"FIXED\",\"chancePercentage\":$5}}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'
+}
+
 publish() { # publish <betId> <jackpotId> <amount>
   curl -sf -X POST "$BASE_URL/api/bets" -H 'Content-Type: application/json' \
     -d "{\"betId\":\"$1\",\"userId\":\"$USER_ID\",\"jackpotId\":\"$2\",\"betAmount\":$3}" > /dev/null
@@ -161,6 +169,20 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/jackpots" \
        "contribution":{"type":"LOGARITHMIC","percentage":10.00},
        "reward":{"type":"FIXED","chancePercentage":10.00}}')
 expect_eq "an unknown configuration type" "$code" "400"
+
+say "9. A CAPPED contribution never exceeds its ceiling"
+CAPPED=$(create_capped_jackpot "Smoke capped $RUN" 100.00 10.00 50.00 0.00)
+BET_CAP=$(uuid); publish "$BET_CAP" "$CAPPED" 900.00
+await_outcome "$BET_CAP" && pass "evaluated" || fail "no outcome appeared"
+expect_eq "10% of 900 is capped at 50" "$(pool "$CAPPED")" "150.0"
+
+BET_UNDER=$(uuid); publish "$BET_UNDER" "$CAPPED" 200.00
+await_outcome "$BET_UNDER" && pass "evaluated" || fail "no outcome appeared"
+expect_eq "a stake under the cap contributes the full percentage" "$(pool "$CAPPED")" "170.0"
+
+BET_EXACT=$(uuid); publish "$BET_EXACT" "$CAPPED" 500.00
+await_outcome "$BET_EXACT" && pass "evaluated" || fail "no outcome appeared"
+expect_eq "exactly at the cap still contributes the cap" "$(pool "$CAPPED")" "220.0"
 
 if [ "$failures" -eq 0 ]; then
   printf '\n\033[32mAll smoke checks passed.\033[0m\n'

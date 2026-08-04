@@ -196,6 +196,7 @@ and nothing existing modified.**
 |---|---|---|
 | **FIXED** | Always the configured percentage | Always the configured percentage |
 | **VARIABLE** | Starts at `percentage`, loses `decreasePerStep` points for every completed `poolStep` of pool growth, never below `minPercentage` | Starts at `chancePercentage`, gains `increasePerStep` points per completed `poolStep`, and is 100% once the pool reaches `poolLimit` |
+| **CAPPED** | `percentage` of the bet amount, but never more than `maxContribution` from a single bet | *n/a* |
 
 "Pool growth" is `currentPool - initialPool`, so both variable curves reset together with the pool
 when the jackpot is awarded.
@@ -210,6 +211,7 @@ can address them:
 | Daily Fixed | `1111…1111` | 10 000 | fixed 5% | fixed 10% |
 | Progressive Weekly | `2222…2222` | 5 000 | 10% → 2%, -1 point per 1 000 of growth | 1% → +2 points per 1 000 of growth, certain at 20 000 |
 | Demo | `3333…3333` | 100 | fixed 10% | 5% → +10 points per 50 of growth, certain at 200 |
+| Capped High Roller | `4444…4444` | 1 000 | 10% of the stake, at most 50 per bet | fixed 10% |
 
 H2 is in-memory, so restarting the app restores exactly this state.
 
@@ -337,7 +339,7 @@ com.sporty.jackpot
 ├── controller     BetController, JackpotController, ApiExceptionHandler
 ├── service        BetService, BetProcessingService, JackpotContributionService,
 │                  JackpotRewardService, JackpotService
-│   ├── contribution   ContributionStrategy (FIXED, VARIABLE) + ContributionStrategies registry
+│   ├── contribution   ContributionStrategy (FIXED, VARIABLE, CAPPED) + ContributionStrategies registry
 │   └── reward         RewardChanceStrategy (FIXED, VARIABLE) + registry, RandomProvider
 ├── messaging      BetPublisher, LoopbackBetPublisher
 │   └── kafka          KafkaBetPublisher, BetConsumer
@@ -353,7 +355,9 @@ holding exactly the fields the rule needs and validating them in its compact con
 it on the interface's `@JsonSubTypes` so it can be persisted and accepted over the API; then write a
 `@Component` implementing `ContributionStrategy<YourRecord>` that returns `YourRecord.class` from
 `configType()`. The registry builds itself from the injected list of strategies and resolves by that
-class, so nothing else has to know about it.
+class, so nothing else has to know about it. A rule whose result is not expressible as a percentage
+of the stake — a per-bet ceiling, say — overrides the strategy's `contributionFor` instead of
+`percentageFor`, as `CAPPED` does.
 
 **Configuration storage.** The configs are two JSON columns on `jackpots`, not a column per field.
 Flattening them would mean a column set that is mostly null for any given jackpot — a union type in

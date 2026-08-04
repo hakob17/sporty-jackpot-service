@@ -17,10 +17,11 @@ import io.swagger.v3.oas.annotations.media.Schema;
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
 @JsonSubTypes({
         @JsonSubTypes.Type(value = FixedContribution.class, name = "FIXED"),
-        @JsonSubTypes.Type(value = VariableContribution.class, name = "VARIABLE")
+        @JsonSubTypes.Type(value = VariableContribution.class, name = "VARIABLE"),
+        @JsonSubTypes.Type(value = CappedContribution.class, name = "CAPPED")
 })
 @Schema(description = "Contribution configuration; the `type` property selects the shape",
         discriminatorProperty = "type",
-        oneOf = {FixedContribution.class, VariableContribution.class})
-public sealed interface ContributionConfig permits FixedContribution, VariableContribution {
+        oneOf = {FixedContribution.class, VariableContribution.class, CappedContribution.class})
+public sealed interface ContributionConfig permits FixedContribution, VariableContribution, CappedContribution {
 }

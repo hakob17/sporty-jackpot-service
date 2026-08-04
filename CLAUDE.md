@@ -193,6 +193,7 @@ For a new Kafka flow, see `.claude/skills/add-messaging-flow/SKILL.md`.
   `ConfigSubtypeRegistrationTest` fails the build if the two lists disagree.
 - H2 is in-memory: all jackpots reset to the seeded state on every app restart (seed data lives in
   `config/SampleDataLoader.java`). The seeded ids are fixed: `11111111-1111-1111-1111-111111111111` (fixed),
-  `22222222-2222-2222-2222-222222222222` (variable), `33333333-3333-3333-3333-333333333333` (demo).
+  `22222222-2222-2222-2222-222222222222` (variable), `33333333-3333-3333-3333-333333333333` (demo),
+  `44444444-4444-4444-4444-444444444444` (capped).
 - Contributions are the only record of a bet — there is no `bets` table; a bet whose jackpot does
   not exist is not persisted and cannot be evaluated for a reward.

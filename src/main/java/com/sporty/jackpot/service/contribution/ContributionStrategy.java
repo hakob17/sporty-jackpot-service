@@ -2,6 +2,7 @@ package com.sporty.jackpot.service.contribution;
 
 import com.sporty.jackpot.model.ContributionConfig;
 import com.sporty.jackpot.model.Jackpot;
+import com.sporty.jackpot.model.Money;
 
 import java.math.BigDecimal;
 
@@ -22,4 +23,15 @@ public interface ContributionStrategy<C extends ContributionConfig> {
 
     /** The percentage of the bet amount this jackpot currently takes, between 0 and 100. */
     BigDecimal percentageFor(Jackpot jackpot, C config);
+
+    /**
+     * The amount this jackpot contributes for the given stake, rounded to the monetary scale.
+     *
+     * <p>The default is the percentage applied to the stake, which is the whole rule for every
+     * percentage-shaped configuration. A rule whose result is not expressible as a percentage of the
+     * stake — a per-bet ceiling, say — overrides this instead.
+     */
+    default BigDecimal contributionFor(Jackpot jackpot, C config, BigDecimal stakeAmount) {
+        return Money.percentageOf(stakeAmount, percentageFor(jackpot, config));
+    }
 }

@@ -85,6 +85,16 @@
       "key": "busyBetId",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "cappedJackpotName",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "cappedJackpotId",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -107,7 +117,7 @@
                 "jackpots"
               ]
             },
-            "description": "The three seeded jackpots with their current pool and their contribution/reward configuration:\n\n| Jackpot | Initial pool | Contribution | Reward chance |\n|---|---|---|---|\n| fixed (`1111...`) | 10 000 | fixed 5% | fixed 10% |\n| variable (`2222...`) | 5 000 | 10% \u2192 2%, -1 point per 1 000 of growth | 1% \u2192 +2 points per 1 000 of growth, certain at 20 000 |\n| demo (`3333...`) | 100 | fixed 10% | 5% \u2192 +10 points per 50 of growth, certain at 200 |"
+            "description": "The four seeded jackpots with their current pool and their contribution/reward configuration:\n\n| Jackpot | Initial pool | Contribution | Reward chance |\n|---|---|---|---|\n| fixed (`1111...`) | 10 000 | fixed 5% | fixed 10% |\n| variable (`2222...`) | 5 000 | 10% \u2192 2%, -1 point per 1 000 of growth | 1% \u2192 +2 points per 1 000 of growth, certain at 20 000 |\n| demo (`3333...`) | 100 | fixed 10% | 5% \u2192 +10 points per 50 of growth, certain at 200 |\n| capped (`4444...`) | 1 000 | 10% of the stake, at most 50 per bet | fixed 10% |"
           },
           "event": [
             {
@@ -681,6 +691,68 @@
                   "    const named = [\"minPercentage\", \"decreasePerStep\", \"poolStep\"]",
                   "        .some(f => detail.includes(f));",
                   "    pm.expect(named, `expected a field name in: ${detail}`).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create a jackpot with a CAPPED contribution",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots"
+              ]
+            },
+            "description": "CAPPED takes a percentage of the stake but never more than `maxContribution` from a single bet — proves the new shape survives the JSON round trip through the API.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"{{cappedJackpotName}}\",\n    \"initialPoolAmount\": 500.0,\n    \"contribution\": {\n        \"type\": \"CAPPED\",\n        \"percentage\": 10.0,\n        \"maxContribution\": 50.0\n    },\n    \"reward\": {\n        \"type\": \"FIXED\",\n        \"chancePercentage\": 10.0\n    }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Names are unique, so generate one per run rather than reusing a literal.",
+                  "pm.collectionVariables.set(\"cappedJackpotName\", \"Capped Special \" + pm.variables.replaceIn(\"{{$randomInt}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "",
+                  "const jackpot = pm.response.json();",
+                  "pm.collectionVariables.set(\"cappedJackpotId\", jackpot.id);",
+                  "pm.test(\"the requested configuration was stored\", () => {",
+                  "    pm.expect(jackpot.contributionConfig.type).to.eql(\"CAPPED\");",
+                  "    pm.expect(Number(jackpot.contributionConfig.percentage)).to.eql(10);",
+                  "    pm.expect(Number(jackpot.contributionConfig.maxContribution)).to.eql(50);",
                   "});"
                 ]
               }

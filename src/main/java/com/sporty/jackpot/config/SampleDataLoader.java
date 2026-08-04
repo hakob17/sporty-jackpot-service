@@ -1,5 +1,6 @@
 package com.sporty.jackpot.config;
 
+import com.sporty.jackpot.model.CappedContribution;
 import com.sporty.jackpot.model.FixedContribution;
 import com.sporty.jackpot.model.FixedReward;
 import com.sporty.jackpot.model.Jackpot;
@@ -36,6 +37,9 @@ public class SampleDataLoader implements CommandLineRunner {
     /** Small pool with a fast growing chance — pays out for certain at 200.00. */
     public static final UUID DEMO_JACKPOT_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
 
+    /** 10% of every stake but never more than 50.00 from one bet — the whale-proof pool. */
+    public static final UUID CAPPED_JACKPOT_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
+
     private final JackpotRepository jackpotRepository;
 
     public SampleDataLoader(JackpotRepository jackpotRepository) {
@@ -69,7 +73,14 @@ public class SampleDataLoader implements CommandLineRunner {
                         new BigDecimal("100.00"),
                         new FixedContribution(new BigDecimal("10.00")),
                         new VariableReward(new BigDecimal("5.00"), new BigDecimal("10.00"),
-                                new BigDecimal("50.00"), new BigDecimal("200.00"))));
+                                new BigDecimal("50.00"), new BigDecimal("200.00"))),
+
+                // 10% of every stake, but never more than 50.00 from a single bet: a 900.00 stake
+                // contributes 50.00, not 90.00. Flat 10% chance to win.
+                new Jackpot(CAPPED_JACKPOT_ID, "Capped High Roller",
+                        new BigDecimal("1000.00"),
+                        new CappedContribution(new BigDecimal("10.00"), new BigDecimal("50.00")),
+                        new FixedReward(new BigDecimal("10.00"))));
 
         jackpotRepository.saveAll(jackpots);
         jackpots.forEach(jackpot -> log.info("Seeded {}", jackpot));

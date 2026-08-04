@@ -2,7 +2,6 @@ package com.sporty.jackpot.service.contribution;
 
 import com.sporty.jackpot.model.ContributionConfig;
 import com.sporty.jackpot.model.Jackpot;
-import com.sporty.jackpot.model.Money;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -39,7 +38,8 @@ public class ContributionStrategies {
 
     /** The amount added to the pool for the given stake. */
     public BigDecimal contributionFor(Jackpot jackpot, BigDecimal stakeAmount) {
-        return Money.percentageOf(stakeAmount, percentageFor(jackpot));
+        ContributionConfig config = jackpot.getContributionConfig();
+        return strategyFor(config).contributionFor(jackpot, config, stakeAmount);
     }
 
     /**
