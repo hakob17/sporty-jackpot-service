@@ -1,0 +1,1371 @@
+{
+  "info": {
+    "_postman_id": "3f6c0a4e-7b21-4a58-9d2e-1c4f8b0a5e11",
+    "name": "Jackpot Contribution and Reward Service",
+    "description": "Every endpoint of the jackpot service, plus a runnable walkthrough that wins a jackpot end to end.\n\n**Before you start**\n\n1. Run the service: `docker compose up -d --build`, or `mvn spring-boot:run -Dspring-boot.run.profiles=no-kafka` for the broker-less mode.\n2. The `baseUrl` collection variable defaults to `http://localhost:8080` \u2014 override it in an environment if needed.\n\n**The walkthrough folder** is ordered and stateful: run it with the Collection Runner (folder \u2192 Run). It publishes a bet, waits for the Kafka consumer to contribute it, pushes the demo jackpot's pool to its 200.00 limit (where the win chance is 100%), evaluates the reward, and checks the pool reset \u2014 then replays the evaluation to prove a winner is not paid twice.\n\nWith Kafka, contribution is asynchronous: the pool checks retry themselves a few times while the consumer catches up. Setting a 300 ms delay in the Runner makes that quieter. In `no-kafka` mode the loopback publisher contributes in-process, so the first attempt already sees the new pool.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "demoJackpotId",
+      "value": "33333333-3333-3333-3333-333333333333",
+      "type": "string"
+    },
+    {
+      "key": "fixedJackpotId",
+      "value": "11111111-1111-1111-1111-111111111111",
+      "type": "string"
+    },
+    {
+      "key": "variableJackpotId",
+      "value": "22222222-2222-2222-2222-222222222222",
+      "type": "string"
+    },
+    {
+      "key": "unknownJackpotId",
+      "value": "99999999-9999-9999-9999-999999999999",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "type": "string"
+    },
+    {
+      "key": "betId",
+      "value": "0a5d7e12-8c3b-4f6a-9d21-5b7c1e4f8a30",
+      "type": "string"
+    },
+    {
+      "key": "orphanBetId",
+      "value": "0b1c2d3e-4f50-4617-8829-9a0b1c2d3e4f",
+      "type": "string"
+    },
+    {
+      "key": "retries",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "createdJackpotId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "createdJackpotName",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "firstOutcome",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "startPool",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "busyJackpotId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "busyJackpotName",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "busyBetId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Jackpots",
+      "description": "Read the seeded jackpots and what has been contributed to them. H2 is in-memory, so restarting the app restores exactly this state.",
+      "item": [
+        {
+          "name": "List all jackpots",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots"
+              ]
+            },
+            "description": "The three seeded jackpots with their current pool and their contribution/reward configuration:\n\n| Jackpot | Initial pool | Contribution | Reward chance |\n|---|---|---|---|\n| fixed (`1111...`) | 10 000 | fixed 5% | fixed 10% |\n| variable (`2222...`) | 5 000 | 10% \u2192 2%, -1 point per 1 000 of growth | 1% \u2192 +2 points per 1 000 of growth, certain at 20 000 |\n| demo (`3333...`) | 100 | fixed 10% | 5% \u2192 +10 points per 50 of growth, certain at 200 |"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const jackpots = pm.response.json();",
+                  "pm.test(\"the seeded jackpots are present\", () => {",
+                  "    const ids = jackpots.map(j => j.id);",
+                  "    pm.expect(ids).to.include.members([\n        \"11111111-1111-1111-1111-111111111111\",\n        \"22222222-2222-2222-2222-222222222222\",\n        \"33333333-3333-3333-3333-333333333333\"\n    ]);",
+                  "});",
+                  "",
+                  "pm.test(\"each jackpot carries its own contribution and reward configuration\", () => {",
+                  "    jackpots.forEach(j => {",
+                  "        pm.expect(j.contributionConfig.type, `${j.id} contribution`).to.be.oneOf([\"FIXED\", \"VARIABLE\"]);",
+                  "        pm.expect(j.rewardConfig.type, `${j.id} reward`).to.be.oneOf([\"FIXED\", \"VARIABLE\"]);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test(\"every jackpot has a human-readable name\", () => {",
+                  "    jackpots.forEach(j => pm.expect(j.name, j.id).to.be.a(\"string\").and.not.empty);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Get one jackpot",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots/{{demoJackpotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots",
+                "{{demoJackpotId}}"
+              ]
+            },
+            "description": "Current pool and configuration of one jackpot. `currentPoolAmount` is what a winning bet would be paid; it resets to `initialPoolAmount` when the jackpot is awarded."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const jackpot = pm.response.json();",
+                  "pm.test(\"it is the jackpot we asked for\", () => {",
+                  "    pm.expect(jackpot.id).to.eql(pm.collectionVariables.get(\"demoJackpotId\"));",
+                  "});",
+                  "pm.test(\"the pool is never below the initial amount\", () => {",
+                  "    pm.expect(Number(jackpot.currentPoolAmount)).to.be.at.least(Number(jackpot.initialPoolAmount));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Get one jackpot - unknown id (404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots/{{unknownJackpotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots",
+                "{{unknownJackpotId}}"
+              ]
+            },
+            "description": "Unknown jackpot ids answer 404 with a `ProblemDetail` body."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 Not Found\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"the detail names the jackpot\", () => {",
+                  "    pm.expect(pm.response.json().detail)\n        .to.include(pm.collectionVariables.get(\"unknownJackpotId\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List a jackpot's contributions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots/{{demoJackpotId}}/contributions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots",
+                "{{demoJackpotId}}",
+                "contributions"
+              ]
+            },
+            "description": "Newest first. Each row records the bet, the user, the stake, how much of it was contributed, and the pool amount right after that contribution \u2014 which is how you can read the variable curve dropping as a pool grows."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const rows = pm.response.json();",
+                  "pm.test(\"every contribution is at most its own stake\", () => {",
+                  "    rows.forEach(c => {",
+                  "        pm.expect(Number(c.contributionAmount), c.betId).to.be.at.most(Number(c.stakeAmount));",
+                  "    });",
+                  "});",
+                  "pm.test(\"contributions are newest first\", () => {",
+                  "    const dates = rows.map(c => new Date(c.createdAt).getTime());",
+                  "    pm.expect(dates).to.eql([...dates].sort((a, b) => b - a));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Jackpot administration",
+      "description": "Create, reconfigure and delete jackpots. Self-contained: it creates everything it touches, so it never depends on \u2014 or damages \u2014 the seeded jackpots.",
+      "item": [
+        {
+          "name": "Create a jackpot",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots"
+              ]
+            },
+            "description": "The id is assigned by the service and returned in the `Location` header. The request configs are polymorphic: `type` selects the shape and each shape declares and validates exactly its own fields.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"{{createdJackpotName}}\",\n    \"initialPoolAmount\": 500.0,\n    \"contribution\": {\n        \"type\": \"VARIABLE\",\n        \"percentage\": 10.0,\n        \"minPercentage\": 2.0,\n        \"decreasePerStep\": 1.0,\n        \"poolStep\": 1000.0\n    },\n    \"reward\": {\n        \"type\": \"FIXED\",\n        \"chancePercentage\": 10.0\n    }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Names are unique, so generate one per run rather than reusing a literal.",
+                  "pm.collectionVariables.set(\"createdJackpotName\", \"Weekend Special \" + pm.variables.replaceIn(\"{{$randomInt}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "",
+                  "const jackpot = pm.response.json();",
+                  "pm.collectionVariables.set(\"createdJackpotId\", jackpot.id);",
+                  "pm.test(\"the Location header points at the new jackpot\", () => {",
+                  "    pm.expect(pm.response.headers.get(\"Location\")).to.eql(`/api/jackpots/${jackpot.id}`);",
+                  "});",
+                  "pm.test(\"the pool starts at the initial amount\", () => {",
+                  "    pm.expect(Number(jackpot.currentPoolAmount)).to.eql(Number(jackpot.initialPoolAmount));",
+                  "});",
+                  "pm.test(\"the requested configuration was stored\", () => {",
+                  "    pm.expect(jackpot.contributionConfig.type).to.eql(\"VARIABLE\");",
+                  "    pm.expect(Number(jackpot.contributionConfig.minPercentage)).to.eql(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Reconfigure it",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots/{{createdJackpotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots",
+                "{{createdJackpotId}}"
+              ]
+            },
+            "description": "Replaces the name and both configurations. The pool and the initial amount are untouched \u2014 only future bets see the new configuration.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"{{createdJackpotName}}\",\n    \"contribution\": {\n        \"type\": \"FIXED\",\n        \"percentage\": 25.0\n    },\n    \"reward\": {\n        \"type\": \"VARIABLE\",\n        \"chancePercentage\": 5.0,\n        \"increasePerStep\": 10.0,\n        \"poolStep\": 50.0,\n        \"poolLimit\": 600.0\n    }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const jackpot = pm.response.json();",
+                  "pm.test(\"reconfigured, keeping its own name\", () => {",
+                  "    pm.expect(jackpot.name).to.eql(pm.collectionVariables.get(\"createdJackpotName\"));",
+                  "    pm.expect(jackpot.contributionConfig.type).to.eql(\"FIXED\");",
+                  "    pm.expect(jackpot.rewardConfig.type).to.eql(\"VARIABLE\");",
+                  "});",
+                  "pm.test(\"the pool was not touched\", () => {",
+                  "    pm.expect(Number(jackpot.currentPoolAmount)).to.eql(500);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create with that name again (409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots"
+              ]
+            },
+            "description": "Names identify a jackpot to humans, so they are unique. The service rejects the duplicate before writing, and a unique index on the column is the backstop if two creates race past that check.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"{{createdJackpotName}}\",\n    \"initialPoolAmount\": 100.0,\n    \"contribution\": {\n        \"type\": \"FIXED\",\n        \"percentage\": 10.0\n    },\n    \"reward\": {\n        \"type\": \"FIXED\",\n        \"chancePercentage\": 0.0\n    }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 Conflict\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"the taken name is quoted back\", () => {",
+                  "    pm.expect(pm.response.json().detail)",
+                  "        .to.include(pm.collectionVariables.get(\"createdJackpotName\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Delete it while unused (204)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots/{{createdJackpotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots",
+                "{{createdJackpotId}}"
+              ]
+            },
+            "description": "Nothing has contributed to this jackpot, so it can be removed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204 No Content\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create one to bet against",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots"
+              ]
+            },
+            "description": "A second jackpot, with a 0% win chance so its pool is never awarded and the next steps stay predictable.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"{{busyJackpotName}}\",\n    \"initialPoolAmount\": 100.0,\n    \"contribution\": {\n        \"type\": \"FIXED\",\n        \"percentage\": 10.0\n    },\n    \"reward\": {\n        \"type\": \"FIXED\",\n        \"chancePercentage\": 0.0\n    }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"busyJackpotName\", \"Busy \" + pm.variables.replaceIn(\"{{$randomInt}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"busyJackpotId\", pm.response.json().id);",
+                  "pm.collectionVariables.set(\"busyBetId\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"retries\", 0);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Publish a bet against it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets"
+              ]
+            },
+            "description": "Contribution rows are the record of real bets \u2014 once one exists, the jackpot can no longer be deleted.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"betId\": \"{{busyBetId}}\",\n    \"userId\": \"{{userId}}\",\n    \"jackpotId\": \"{{busyJackpotId}}\",\n    \"betAmount\": 100.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 Accepted\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Wait for it to be processed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bets/{{busyBetId}}/jackpot-reward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets",
+                "{{busyBetId}}",
+                "jackpot-reward"
+              ]
+            },
+            "description": "Under Kafka the bet is contributed and evaluated asynchronously, so this retries until the outcome exists before the delete below is attempted."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const tries = Number(pm.collectionVariables.get(\"retries\") || 0);",
+                  "if (pm.response.code === 404 && tries < 20) {",
+                  "    pm.collectionVariables.set(\"retries\", tries + 1);",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.collectionVariables.set(\"retries\", 0);",
+                  "    pm.test(\"the bet was contributed and evaluated\", () => pm.response.to.have.status(200));",
+                  "    pm.test(\"it could not win - the chance is 0%\", () => {",
+                  "        pm.expect(pm.response.json().won).to.be.false;",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Delete it now it has contributions (409)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots/{{busyJackpotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots",
+                "{{busyJackpotId}}"
+              ]
+            },
+            "description": "Deleting it would orphan the contribution row, so the request is refused."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 Conflict\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"the reason is given\", () => {",
+                  "    pm.expect(pm.response.json().detail).to.include(\"contributions\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create with an incomplete VARIABLE config (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots"
+              ]
+            },
+            "description": "`percentage` alone is enough for a FIXED contribution but not for a VARIABLE one. Each shape is its own record and validates itself in its constructor, so an incomplete config is rejected at the boundary rather than being stored as a half-null row.\n\nNote the trade: the record constructor throws on the first missing value, so the response names one field at a time rather than all of them at once.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"Half configured\",\n    \"initialPoolAmount\": 500.0,\n    \"contribution\": {\n        \"type\": \"VARIABLE\",\n        \"percentage\": 10.0\n    },\n    \"reward\": {\n        \"type\": \"FIXED\",\n        \"chancePercentage\": 10.0\n    }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"the response names the field that is missing\", () => {",
+                  "    const detail = pm.response.json().detail;",
+                  "    const named = [\"minPercentage\", \"decreasePerStep\", \"poolStep\"]",
+                  "        .some(f => detail.includes(f));",
+                  "    pm.expect(named, `expected a field name in: ${detail}`).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Bets",
+      "description": "Use cases 1-3: publish a bet, which is consumed off the `jackpot-bets` topic and contributed to its matching jackpot.",
+      "item": [
+        {
+          "name": "Publish a bet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"betId\": \"{{betId}}\",\n    \"userId\": \"{{userId}}\",\n    \"jackpotId\": \"{{demoJackpotId}}\",\n    \"betAmount\": 100.00\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets"
+              ]
+            },
+            "description": "Publishes the bet to the `jackpot-bets` Kafka topic (202 Accepted). The consumer then contributes it to the matching jackpot.\n\nThe bet is contributed **and evaluated** by the pipeline; the reward requests below read that outcome. The pre-request script generates a fresh `betId` on every send \u2014 contribution is idempotent per bet id, so re-sending the same id is a deliberate no-op (see \"Publish the same bet twice\")."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh id per send; contribution is idempotent per betId.",
+                  "pm.collectionVariables.set(\"betId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 Accepted\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"the accepted bet is echoed back\", () => {",
+                  "    pm.expect(pm.response.json().betId).to.eql(pm.collectionVariables.get(\"betId\"));",
+                  "});",
+                  "",
+                  "console.log(\"Published \" + pm.collectionVariables.get(\"betId\") +",
+                  "    \" - evaluate it with the reward request, or watch the pool grow.\");"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Publish the same bet twice (idempotent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"betId\": \"{{betId}}\",\n    \"userId\": \"{{userId}}\",\n    \"jackpotId\": \"{{demoJackpotId}}\",\n    \"betAmount\": 100.00\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets"
+              ]
+            },
+            "description": "Re-publishes the bet id from the previous request. Kafka may redeliver and clients retry, so a bet contributes at most once \u2014 the app logs `already contributed ... skipping` and the pool does not move. Send \"Get one jackpot\" before and after to see it stay put."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 Accepted (the duplicate is skipped downstream, not rejected)\", () => {",
+                  "    pm.response.to.have.status(202);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Publish a bet on an unknown jackpot (404)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"betId\": \"{{orphanBetId}}\",\n    \"userId\": \"{{userId}}\",\n    \"jackpotId\": \"{{unknownJackpotId}}\",\n    \"betAmount\": 500.00\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets"
+              ]
+            },
+            "description": "The jackpot is checked before the bet is published, so this is rejected with 404 and nothing reaches the `jackpot-bets` topic.\n\nThe alternative \u2014 accept it, publish it, and let the consumer skip it \u2014 costs a message, a consumer round trip and a log line, and tells the client nothing. The consumer keeps its own \"no matching jackpot\" branch anyway, because the jackpot could be removed between this check and delivery."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 Not Found\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"the detail names the jackpot\", () => {",
+                  "    pm.expect(pm.response.json().detail)",
+                  "        .to.include(pm.collectionVariables.get(\"unknownJackpotId\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Publish an invalid bet (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"betId\": null,\n    \"userId\": \"{{userId}}\",\n    \"jackpotId\": \"{{demoJackpotId}}\",\n    \"betAmount\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets"
+              ]
+            },
+            "description": "A blank `betId` and a non-positive `betAmount`. Bean Validation rejects the request before anything is published, and the handler returns a `ProblemDetail` listing every field error."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));",
+                  "",
+                  "const detail = pm.response.json().detail;",
+                  "pm.test(\"both field errors are reported\", () => {",
+                  "    pm.expect(detail).to.include(\"betId\");",
+                  "    pm.expect(detail).to.include(\"betAmount\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Reward",
+      "description": "Use case 4. The draw happens once, in the pipeline, immediately after the bet contributes \u2014 so these are reads. Asking again always gives the same answer.",
+      "item": [
+        {
+          "name": "The bet's reward outcome",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bets/{{betId}}/jackpot-reward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets",
+                "{{betId}}",
+                "jackpot-reward"
+              ]
+            },
+            "description": "Reads the outcome decided when the bet was processed. 200 either way \u2014 read `won`. The response also carries the chance the draw was made against and the value that came up, so an outcome can be explained rather than taken on trust.\n\n404 means the bet has not been evaluated: it named a jackpot that does not exist, or it has not been consumed off the topic yet."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const result = pm.response.json();",
+                  "pm.test(\"the outcome is self-consistent\", () => {",
+                  "    if (result.won) {",
+                  "        pm.expect(Number(result.jackpotRewardAmount)).to.be.above(0);",
+                  "        pm.expect(Number(result.drawnValue)).to.be.below(Number(result.chancePercentage));",
+                  "    } else {",
+                  "        pm.expect(Number(result.jackpotRewardAmount)).to.eql(0);",
+                  "        pm.expect(Number(result.drawnValue)).to.be.at.least(Number(result.chancePercentage));",
+                  "    }",
+                  "});",
+                  "pm.test(\"the decision is explainable\", () => {",
+                  "    pm.expect(result.chancePercentage).to.not.be.null;",
+                  "    pm.expect(result.drawnValue).to.not.be.null;",
+                  "    pm.expect(result.createdAt).to.not.be.null;",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set(\"firstOutcome\", JSON.stringify(result));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Asking again never re-draws",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bets/{{betId}}/jackpot-reward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets",
+                "{{betId}}",
+                "jackpot-reward"
+              ]
+            },
+            "description": "The same request again. Because every evaluation is persisted \u2014 win **or** loss \u2014 this is a read of the same row, byte for byte.\n\nWhen the draw lived in the endpoint and only wins were stored, a loss left no trace and could be retried until it won: with a flat 10% chance, 22 calls gave a 90% chance of taking the pool, at no cost."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"the response is identical to the first one\", () => {",
+                  "    pm.expect(JSON.stringify(pm.response.json()))",
+                  "        .to.eql(pm.collectionVariables.get(\"firstOutcome\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "The outcome endpoint rejects POST (405)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bets/{{betId}}/jackpot-reward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets",
+                "{{betId}}",
+                "jackpot-reward"
+              ]
+            },
+            "description": "It is a read. A POST would imply asking for a fresh draw, which is exactly the bug that was fixed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"405 Method Not Allowed\", () => pm.response.to.have.status(405));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "A bet that was never evaluated (404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bets/{{orphanBetId}}/jackpot-reward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets",
+                "{{orphanBetId}}",
+                "jackpot-reward"
+              ]
+            },
+            "description": "Only a bet that contributed to a jackpot is evaluated. This bet id was never accepted (its jackpot does not exist), so there is no outcome to read."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 Not Found\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"the detail explains why\", () => {",
+                  "    pm.expect(pm.response.json().detail).to.include(\"has not been evaluated\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Walkthrough - win a jackpot",
+      "description": "An ordered, self-checking run ending in a guaranteed win.\n\nRun it with the Collection Runner. It uses the demo jackpot, whose variable reward chance reaches 100% once the pool hits its 200.00 limit \u2014 so the win is arithmetic, not luck.\n\nNote what is **not** here: a request that asks the service to draw. The bet is evaluated by the pipeline the moment it contributes; the last steps only read what was already decided.",
+      "item": [
+        {
+          "name": "1. The demo jackpot starts at its initial pool",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots/{{demoJackpotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots",
+                "{{demoJackpotId}}"
+              ]
+            },
+            "description": "Baseline. The demo jackpot starts at 100.00, takes a flat 10% of every stake, and is guaranteed to pay out once its pool reaches 200.00. The test records the current pool so the later steps assert relative to it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"walkthroughBetId\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"retries\", 0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const jackpot = pm.response.json();",
+                  "pm.collectionVariables.set(\"startPool\", jackpot.currentPoolAmount);",
+                  "",
+                  "pm.test(\"it takes a flat 10% of every stake\", () => {",
+                  "    pm.expect(jackpot.contributionConfig.type).to.eql(\"FIXED\");",
+                  "    pm.expect(Number(jackpot.contributionConfig.percentage)).to.eql(10);",
+                  "});",
+                  "pm.test(\"its reward is guaranteed once the pool reaches 200.00\", () => {",
+                  "    pm.expect(jackpot.rewardConfig.type).to.eql(\"VARIABLE\");",
+                  "    pm.expect(Number(jackpot.rewardConfig.poolLimit)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "2. Publish one bet big enough to reach the limit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"betId\": \"{{walkthroughBetId}}\",\n    \"userId\": \"{{userId}}\",\n    \"jackpotId\": \"{{demoJackpotId}}\",\n    \"betAmount\": 1000.00\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets"
+              ]
+            },
+            "description": "10% of a 1000.00 stake is 100.00 \u2014 enough to take the pool from its seeded 100.00 to the 200.00 limit. The bet is then evaluated immediately, by the pipeline, against the pool it just filled. Nothing needs to ask."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 Accepted\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "3. The pipeline already decided the outcome",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bets/{{walkthroughBetId}}/jackpot-reward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets",
+                "{{walkthroughBetId}}",
+                "jackpot-reward"
+              ]
+            },
+            "description": "No request asked for a draw \u2014 the bet was evaluated when it was consumed. Under Kafka that is asynchronous, so this retries until the outcome appears."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const tries = Number(pm.collectionVariables.get(\"retries\") || 0);",
+                  "if (pm.response.code === 404 && tries < 20) {",
+                  "    pm.collectionVariables.set(\"retries\", tries + 1);",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.collectionVariables.set(\"retries\", 0);",
+                  "    pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "",
+                  "    const result = pm.response.json();",
+                  "    pm.collectionVariables.set(\"firstOutcome\", JSON.stringify(result));",
+                  "",
+                  "    pm.test(\"the bet won\", () => pm.expect(result.won).to.be.true);",
+                  "    pm.test(\"drawn against a certain chance\", () => {",
+                  "        pm.expect(Number(result.chancePercentage)).to.eql(100);",
+                  "        pm.expect(Number(result.drawnValue)).to.be.below(100);",
+                  "    });",
+                  "    pm.test(\"it was paid the pool it had just filled\", () => {",
+                  "        pm.expect(Number(result.jackpotRewardAmount))",
+                  "            .to.eql(Number(pm.collectionVariables.get(\"startPool\")) + 100);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "4. The pool reset to its initial amount",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots/{{demoJackpotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots",
+                "{{demoJackpotId}}"
+              ]
+            },
+            "description": "An awarded jackpot starts over: the pool goes back to the configured initial amount, and with it the variable curves, which are derived from pool growth."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const jackpot = pm.response.json();",
+                  "pm.test(\"the pool reset to the initial amount\", () => {",
+                  "    pm.expect(Number(jackpot.currentPoolAmount)).to.eql(Number(jackpot.initialPoolAmount));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "5. The contribution is recorded",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jackpots/{{demoJackpotId}}/contributions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "jackpots",
+                "{{demoJackpotId}}",
+                "contributions"
+              ]
+            },
+            "description": "The contribution row is the persisted record of the bet: bet id, user id, jackpot id, stake, contribution and the pool at that moment."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const betId = pm.collectionVariables.get(\"walkthroughBetId\");",
+                  "const row = pm.response.json().find(c => c.betId === betId);",
+                  "pm.test(\"this bet's contribution is recorded\", () => pm.expect(row).to.not.be.undefined);",
+                  "pm.test(\"it contributed 100.00 of its 1000.00 stake\", () => {",
+                  "    pm.expect(Number(row.stakeAmount)).to.eql(1000);",
+                  "    pm.expect(Number(row.contributionAmount)).to.eql(100);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "6. Asking again returns the identical outcome",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bets/{{walkthroughBetId}}/jackpot-reward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bets",
+                "{{walkthroughBetId}}",
+                "jackpot-reward"
+              ]
+            },
+            "description": "The safety property that matters: the outcome is a stored fact, so no amount of asking pays a second time or changes what happened."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"byte-for-byte the same answer\", () => {",
+                  "    pm.expect(JSON.stringify(pm.response.json()))",
+                  "        .to.eql(pm.collectionVariables.get(\"firstOutcome\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "OpenAPI document",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v3/api-docs",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v3",
+            "api-docs"
+          ]
+        },
+        "description": "The generated OpenAPI 3 document. Swagger UI renders it at {{baseUrl}}/swagger-ui.html; import this URL into Postman to regenerate a collection from the live API."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+              "",
+              "const doc = pm.response.json();",
+              "pm.test(\"every endpoint is documented\", () => {",
+              "    pm.expect(Object.keys(doc.paths)).to.have.members([",
+              "        \"/api/bets\",",
+              "        \"/api/bets/{betId}/jackpot-reward\",",
+              "        \"/api/jackpots\",",
+              "        \"/api/jackpots/{jackpotId}\",",
+              "        \"/api/jackpots/{jackpotId}/contributions\"",
+              "    ]);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "response": []
+    }
+  ]
+}
