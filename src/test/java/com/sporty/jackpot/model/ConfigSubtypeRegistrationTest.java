@@ -61,6 +61,9 @@ class ConfigSubtypeRegistrationTest {
         assertThat(mapper.writeValueAsString(new VariableContribution(new BigDecimal("10.00"),
                 new BigDecimal("2.00"), new BigDecimal("1.00"), new BigDecimal("1000.00"))))
                 .contains("\"type\":\"VARIABLE\"");
+        assertThat(mapper.writeValueAsString(new CappedContribution(new BigDecimal("10.00"),
+                new BigDecimal("50.00"))))
+                .contains("\"type\":\"CAPPED\"");
         assertThat(mapper.writeValueAsString(new FixedReward(new BigDecimal("10.00"))))
                 .contains("\"type\":\"FIXED\"");
         assertThat(mapper.writeValueAsString(new VariableReward(new BigDecimal("1.00"),
@@ -79,5 +82,14 @@ class ConfigSubtypeRegistrationTest {
                 .isEqualTo(contribution);
         assertThat(mapper.readValue(mapper.writeValueAsString(reward), RewardConfig.class))
                 .isEqualTo(reward);
+    }
+
+    @Test
+    void aCappedConfigurationSurvivesTheRoundTripThroughJson() throws Exception {
+        CappedContribution capped = new CappedContribution(new BigDecimal("10.00"), new BigDecimal("50.00"));
+        ContributionConfig deserialized = mapper.readValue(mapper.writeValueAsString(capped), ContributionConfig.class);
+
+        assertThat(deserialized).isEqualTo(capped);
+        assertThat(deserialized).isInstanceOf(CappedContribution.class);
     }
 }

@@ -1,5 +1,6 @@
 package com.sporty.jackpot.controller;
 
+import com.sporty.jackpot.model.CappedContribution;
 import com.sporty.jackpot.model.FixedReward;
 import com.sporty.jackpot.model.Jackpot;
 import com.sporty.jackpot.model.VariableContribution;
@@ -44,6 +45,12 @@ class JackpotControllerTest {
         return new Jackpot(JACKPOT_ID, name, new BigDecimal("5000.00"),
                 new VariableContribution(new BigDecimal("10.00"), new BigDecimal("2.00"),
                         new BigDecimal("1.00"), new BigDecimal("1000.00")),
+                new FixedReward(new BigDecimal("10.00")));
+    }
+
+    private static Jackpot cappedJackpot() {
+        return new Jackpot(JACKPOT_ID, "Capped Special", new BigDecimal("5000.00"),
+                new CappedContribution(new BigDecimal("10.00"), new BigDecimal("50.00")),
                 new FixedReward(new BigDecimal("10.00")));
     }
 
@@ -97,6 +104,60 @@ class JackpotControllerTest {
                                   "reward": {"type":"FIXED","chancePercentage":10.00}
                                 }"""))
                 .andExpect(status().isBadRequest());
+
+        verify(jackpotService, never()).create(any());
+    }
+
+    @Test
+    void creatingAJackpotWithACappedContributionReturnsTheStoredConfiguration() throws Exception {
+        when(jackpotService.create(any())).thenReturn(cappedJackpot());
+
+        mockMvc.perform(post("/api/jackpots")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Capped Special",
+                                  "initialPoolAmount": 5000.00,
+                                  "contribution": {"type":"CAPPED","percentage":10.00,"maxContribution":50.00},
+                                  "reward": {"type":"FIXED","chancePercentage":10.00}
+                                }"""))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", "/api/jackpots/" + JACKPOT_ID))
+                .andExpect(jsonPath("$.contributionConfig.type").value("CAPPED"))
+                .andExpect(jsonPath("$.contributionConfig.percentage").value(10.00))
+                .andExpect(jsonPath("$.contributionConfig.maxContribution").value(50.00));
+    }
+
+    @Test
+    void aCappedContributionMissingItsCeilingIsRejected() throws Exception {
+        mockMvc.perform(post("/api/jackpots")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Bad capped",
+                                  "initialPoolAmount": 5000.00,
+                                  "contribution": {"type":"CAPPED","percentage":10.00},
+                                  "reward": {"type":"FIXED","chancePercentage":10.00}
+                                }"""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("maxContribution")));
+
+        verify(jackpotService, never()).create(any());
+    }
+
+    @Test
+    void aCappedContributionWithAZeroPercentageIsRejected() throws Exception {
+        mockMvc.perform(post("/api/jackpots")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Bad percentage",
+                                  "initialPoolAmount": 5000.00,
+                                  "contribution": {"type":"CAPPED","percentage":0,"maxContribution":50.00},
+                                  "reward": {"type":"FIXED","chancePercentage":10.00}
+                                }"""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("percentage")));
 
         verify(jackpotService, never()).create(any());
     }

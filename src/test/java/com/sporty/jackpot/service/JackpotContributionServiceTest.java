@@ -1,5 +1,6 @@
 package com.sporty.jackpot.service;
 
+import com.sporty.jackpot.model.CappedContribution;
 import com.sporty.jackpot.model.FixedContribution;
 import com.sporty.jackpot.model.FixedReward;
 import com.sporty.jackpot.model.Jackpot;
@@ -8,6 +9,7 @@ import com.sporty.jackpot.model.VariableContribution;
 import com.sporty.jackpot.dto.Bet;
 import com.sporty.jackpot.repository.JackpotContributionRepository;
 import com.sporty.jackpot.repository.JackpotRepository;
+import com.sporty.jackpot.service.contribution.CappedContributionStrategy;
 import com.sporty.jackpot.service.contribution.ContributionStrategies;
 import com.sporty.jackpot.service.contribution.FixedContributionStrategy;
 import com.sporty.jackpot.service.contribution.VariableContributionStrategy;
@@ -45,7 +47,8 @@ class JackpotContributionServiceTest {
     @BeforeEach
     void setUp() {
         ContributionStrategies strategies = new ContributionStrategies(
-                List.of(new FixedContributionStrategy(), new VariableContributionStrategy()));
+                List.of(new FixedContributionStrategy(), new VariableContributionStrategy(),
+                        new CappedContributionStrategy()));
         service = new JackpotContributionService(jackpotRepository, contributionRepository, strategies,
                 Clock.fixed(NOW, ZoneOffset.UTC));
         when(contributionRepository.save(any(JackpotContribution.class)))
@@ -60,6 +63,12 @@ class JackpotContributionServiceTest {
 
     private static Bet bet(UUID betId, UUID jackpotId, String amount) {
         return new Bet(betId, USER, jackpotId, new BigDecimal(amount));
+    }
+
+    private static Jackpot cappedJackpot(UUID jackpotId, String percentage, String maxContribution) {
+        return new Jackpot(jackpotId, "Capped", new BigDecimal("1000.00"),
+                new CappedContribution(new BigDecimal(percentage), new BigDecimal(maxContribution)),
+                new FixedReward(new BigDecimal("10.00")));
     }
 
     @Test
@@ -122,6 +131,43 @@ class JackpotContributionServiceTest {
         when(contributionRepository.findByBetId(betId)).thenReturn(Optional.of(existing));
 
         Optional<JackpotContribution> contribution = service.contribute(bet(betId, FIXED_JACKPOT, "200.00"));
+
+        assertThat(contribution).contains(existing);
+        verify(jackpotRepository, never()).findByIdForUpdate(any());
+        verify(contributionRepository, never()).save(any());
+    }
+
+    @Test
+    void capsTheContributionForALargeStake() {
+        UUID betId = UUID.randomUUID();
+        UUID cappedJackpotId = UUID.randomUUID();
+        Jackpot jackpot = cappedJackpot(cappedJackpotId, "10.00", "50.00");
+        when(contributionRepository.findByBetId(betId)).thenReturn(Optional.empty());
+        when(jackpotRepository.findByIdForUpdate(cappedJackpotId)).thenReturn(Optional.of(jackpot));
+
+        Optional<JackpotContribution> contribution = service.contribute(bet(betId, cappedJackpotId, "900.00"));
+
+        assertThat(contribution).isPresent();
+        assertThat(contribution.get().getBetId()).isEqualTo(betId);
+        assertThat(contribution.get().getUserId()).isEqualTo(USER);
+        assertThat(contribution.get().getJackpotId()).isEqualTo(cappedJackpotId);
+        assertThat(contribution.get().getStakeAmount()).isEqualByComparingTo("900.00");
+        assertThat(contribution.get().getContributionAmount()).isEqualByComparingTo("50.00");
+        assertThat(contribution.get().getCurrentJackpotAmount()).isEqualByComparingTo("1050.00");
+        assertThat(contribution.get().getCreatedAt()).isEqualTo(NOW);
+        assertThat(jackpot.getCurrentPoolAmount()).isEqualByComparingTo("1050.00");
+        verify(jackpotRepository).save(jackpot);
+    }
+
+    @Test
+    void aRedeliveredCappedBetIsNotContributedTwice() {
+        UUID betId = UUID.randomUUID();
+        UUID cappedJackpotId = UUID.randomUUID();
+        JackpotContribution existing = new JackpotContribution(betId, USER, cappedJackpotId,
+                new BigDecimal("900.00"), new BigDecimal("50.00"), new BigDecimal("1050.00"), NOW);
+        when(contributionRepository.findByBetId(betId)).thenReturn(Optional.of(existing));
+
+        Optional<JackpotContribution> contribution = service.contribute(bet(betId, cappedJackpotId, "900.00"));
 
         assertThat(contribution).contains(existing);
         verify(jackpotRepository, never()).findByIdForUpdate(any());
