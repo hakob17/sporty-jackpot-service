@@ -1,0 +1,117 @@
+name: Claude Review
+
+# Agent code review that gates merging. Make the "review" job a required status
+# check in branch protection so a PR cannot be merged until Claude approves.
+#
+# The reviewer checks:
+#   - tests are written/modified for new functionality (if applicable)
+#   - no security risks
+#   - no secret exposure
+#   - no formatting issues
+#   - no deviations from the guidelines and project rules (CLAUDE.md, .claude/skills/)
+#
+# Note: PRs created by the claude.yml pipeline with the default Actions token do
+# not trigger this workflow (GitHub suppresses recursive workflow runs) — those
+# PRs are reviewed by the in-pipeline "review" job instead. Set the CLAUDE_GH_PAT
+# secret to have bot-created PRs trigger this workflow too.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Agent code review (Opus)
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Review with Claude Opus
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the REVIEW agent for this repository. Review pull request
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Do NOT modify any code — review only.
+
+            1. Read the PR: gh pr view ${{ github.event.pull_request.number }} --comments
+               and the diff: gh pr diff ${{ github.event.pull_request.number }}
+            2. Read CLAUDE.md and .claude/skills/ — they define the project rules the
+               PR must follow. .claude/agents/jackpot-reviewer.md describes what this
+               project cares about most; apply it.
+            3. Check, in this order:
+               a. TESTS — new/changed functionality has unit tests written or updated
+                  for it, covering the boundaries (floor, ceiling, pool limit, a stake
+                  that rounds) and the idempotent replay (skip this requirement only
+                  for pure docs/config changes).
+               b. DESIGN — contribution/reward variation is expressed as a strategy
+                  component resolved by enum, never as an if or switch inside a
+                  service; pool arithmetic lives on the Jackpot entity; config
+                  validation lives in the embeddable static factories.
+               c. CORRECTNESS — idempotency per betId on anything that mutates a pool;
+                  findByIdForUpdate inside @Transactional on any read-modify-write of
+                  a jackpot; BigDecimal money rounded through Money (no double, no
+                  bare divide, no equals on BigDecimal).
+               d. SECURITY & SECRETS — no injection, unsafe deserialization, broken
+                  auth/validation, unsafe reflection; no hardcoded credentials, API
+                  keys, tokens, passwords, or connection strings with embedded
+                  secrets anywhere in the diff.
+               e. GUIDELINES — no deviations from CLAUDE.md conventions and the
+                  .claude/skills/ playbooks: layering (controller → service →
+                  repository/messaging), constructor injection only, no Lombok,
+                  validation on request DTOs, idempotent consumers, config under
+                  app.*, INFO logging on every produce/consume and every
+                  contribution/reward decision, 4-space indentation, no wildcard or
+                  unused imports, no commented-out code or leftover debug output, and
+                  README.md / CLAUDE.md updated when behaviour changed.
+            4. Post exactly ONE review comment on the PR with
+               gh pr comment ${{ github.event.pull_request.number }} --body-file <file>
+               containing: a short summary, findings grouped by the five categories
+               above (or "OK" per category), file:line references for every finding,
+               and the LAST line of the comment must be exactly one of:
+                 CLAUDE-REVIEW-VERDICT: APPROVE
+                 CLAUDE-REVIEW-VERDICT: REQUEST_CHANGES
+            5. Verdict rules: REQUEST_CHANGES if ANY category has a blocking finding
+               (missing or failing tests, a branch where a strategy belongs, a lost
+               update, a non-idempotent mutation, any security risk, any exposed
+               secret, guideline violations). Minor optional suggestions alone do not
+               block — mention them and APPROVE.
+          claude_args: |
+            --model claude-opus-5
+            --max-turns 30
+            --allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git log:*),Bash(git diff:*),Bash(ls:*),Bash(cat:*)"
+
+      - name: Enforce review verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body=$(gh pr view ${{ github.event.pull_request.number }} --json comments \
+            --jq '[.comments[].body | select(contains("CLAUDE-REVIEW-VERDICT:"))] | last')
+          if [ -z "$body" ] || [ "$body" = "null" ]; then
+            echo "::error::No Claude review verdict found on the PR."
+            exit 1
+          fi
+          printf '%s\n' "$body"
+          if printf '%s' "$body" | grep -q "CLAUDE-REVIEW-VERDICT: APPROVE"; then
+            echo "Claude approved the PR."
+          else
+            echo "::error::Claude requested changes — see the review comment on the PR."
+            exit 1
+          fi

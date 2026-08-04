@@ -1,0 +1,351 @@
+name: Claude Issue Workflow
+
+# Four-stage pipeline for issues labeled "claude" — each stage on the model that fits it:
+#   1. plan      — Opus   analyzes the issue and posts an implementation plan as a comment
+#   2. implement — Sonnet implements the plan on a branch and opens a pull request
+#   3. test      — Haiku  writes the tests for that change, runs them, and pushes them
+#   4. review    — Opus   reviews the resulting PR; the job fails (blocking merge when set
+#                         as a required check) unless it approves
+#
+# Requires the ANTHROPIC_API_KEY repository secret.
+# Optional: set the CLAUDE_GH_PAT secret (a PAT with repo scope) so PRs created by the
+# implement job also trigger the standalone "Claude Review" and CI workflows — PRs
+# created with the default Actions token do not trigger other workflows.
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+
+# One run per issue at a time (an issue opened with the label fires both
+# "opened" and "labeled" — don't plan/implement twice in parallel)
+concurrency:
+  group: claude-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+env:
+  # The model split lives in one place — the stage comments above explain the reasoning.
+  PLANNING_MODEL: claude-opus-5
+  CODING_MODEL: claude-sonnet-5
+  TESTING_MODEL: claude-haiku-4-5
+  REVIEW_MODEL: claude-opus-5
+
+jobs:
+  plan:
+    name: Analyze issue (Opus)
+    if: github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'claude')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Write is in --allowedTools because the plan is posted with `gh issue comment
+      # --body-file`, so the agent must be able to create that file. Without it this stage
+      # explores the repo, composes the plan, and then has no way to persist it — it runs
+      # its turns out and posts nothing. No Edit: planning must not touch code.
+      - name: Plan with Claude Opus
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the PLANNING agent for this repository. Do NOT write or modify any code.
+
+            Analyze GitHub issue #${{ github.event.issue.number }} in ${{ github.repository }}:
+            1. Read the issue with: gh issue view ${{ github.event.issue.number }}
+            2. Read CLAUDE.md and the relevant skills in .claude/skills/ to understand the
+               architecture, conventions, and required steps. If the issue changes how a
+               jackpot contributes or rewards, .claude/skills/add-jackpot-configuration/
+               is the one that applies — that behaviour is a strategy, never a branch in a
+               service.
+            3. Explore the codebase to ground the plan in the actual code.
+            4. Produce a concrete implementation plan: files to create/change (with paths),
+               the layer-by-layer steps (model/dto → repository → service/strategy →
+               controller/messaging → config), and how to verify end to end.
+            5. Add a section titled "Tests to write" listing, per file, the cases a separate
+               testing agent must cover — including the boundary cases (floor, ceiling, pool
+               limit, rounding) and the idempotent-replay cases where they apply.
+            6. Post the plan as a comment on the issue with:
+               gh issue comment ${{ github.event.issue.number }} --body-file <plan file>
+               Start the comment body with the marker line: <!-- claude-plan -->
+
+            The plan must be self-contained so separate coding and testing agents can work
+            from it without re-reading this conversation.
+          claude_args: |
+            --model ${{ env.PLANNING_MODEL }}
+            --max-turns 30
+            --allowedTools "Read,Write,Grep,Glob,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(ls:*),Bash(cat:*)"
+
+  implement:
+    name: Implement plan (Sonnet)
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Implement with Claude Sonnet
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_GH_PAT || github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the CODING agent for this repository. A planning agent has already
+            analyzed issue #${{ github.event.issue.number }} and posted an implementation
+            plan as an issue comment marked with "<!-- claude-plan -->".
+
+            1. Read the issue and the plan:
+               gh issue view ${{ github.event.issue.number }} --comments
+            2. Follow CLAUDE.md and the step-by-step skills in .claude/skills/
+               (add-jackpot-configuration for contribution/reward rules, add-feature for
+               anything else, add-messaging-flow for Kafka) while implementing the plan.
+            3. Create a branch named claude/issue-${{ github.event.issue.number }}.
+            4. Implement the plan. Write the production code and update the docs
+               (README.md, CLAUDE.md) that the change affects.
+            5. Do NOT write the unit tests — a dedicated testing agent runs after you and
+               writes them from the plan's "Tests to write" section. Your job is that the
+               code is correct and complete: run "mvn -B -q -DskipTests compile" and make
+               sure it compiles before finishing.
+            6. Commit with a descriptive message, push the branch, and open a pull request:
+               gh pr create --title "<concise title> (closes #${{ github.event.issue.number }})" \
+                 --body "<summary of changes and 'Closes #${{ github.event.issue.number }}'>"
+
+            Creating the pull request is REQUIRED — the task is not done until the PR exists.
+          claude_args: |
+            --model ${{ env.CODING_MODEL }}
+            --max-turns 80
+            --allowedTools "Read,Edit,Write,Grep,Glob,Bash(mvn:*),Bash(git:*),Bash(gh issue view:*),Bash(gh pr create:*),Bash(ls:*),Bash(cat:*),Bash(mkdir:*)"
+
+  test:
+    name: Write tests (Haiku)
+    needs: implement
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Checkout the implementation branch
+        uses: actions/checkout@v4
+        with:
+          ref: claude/issue-${{ github.event.issue.number }}
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Write tests with Claude Haiku
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the TESTING agent for this repository. A coding agent has implemented
+            issue #${{ github.event.issue.number }} on the branch you are checked out on.
+            Write the tests for that change — do NOT change production code under
+            src/main/java.
+
+            1. See what changed: git diff origin/main...HEAD --stat, then read the changed
+               files in full.
+            2. Read the plan's "Tests to write" section:
+               gh issue view ${{ github.event.issue.number }} --comments
+            3. Read .claude/agents/test-author.md — it defines the house style you must
+               match — and read the neighbouring test class before writing a line.
+               In short: plain JUnit + Mockito with no Spring context (except controllers,
+               which use @WebMvcTest + @MockBean); mock interfaces only (repositories,
+               BetPublisher, RandomProvider) and never concrete classes; use the real
+               strategy registries; pin time with Clock.fixed; compare amounts with
+               isEqualByComparingTo; stub save(...) to return its argument; name tests as
+               sentences about behaviour.
+            4. Write the tests, covering in priority order: the boundaries of the rules
+               (before any pool growth, one step past a threshold, the floor/ceiling/pool
+               limit, a stake that rounds), the idempotent-replay cases (a redelivered bet
+               must not contribute twice; a bet that already won must not be paid twice or
+               re-draw), the negative paths (no matching jackpot, evaluating a bet with no
+               contribution, invalid input), and the state after the call rather than just
+               the return value.
+            5. Run "mvn -B test" until it passes. If a test you wrote fails, decide whether
+               the test or the production code is wrong. If the production code is wrong,
+               do NOT weaken the assertion — leave the test failing and say so in step 6.
+            6. Commit the tests and push to this branch. Then comment on the pull request
+               for this branch with a short summary of what you covered and anything you
+               could not get passing:
+                 pr=$(gh pr list --head claude/issue-${{ github.event.issue.number }} --json number --jq '.[0].number')
+                 gh pr comment "$pr" --body "<summary>"
+          claude_args: |
+            --model ${{ env.TESTING_MODEL }}
+            --max-turns 60
+            --allowedTools "Read,Edit,Write,Grep,Glob,Bash(mvn:*),Bash(git:*),Bash(gh issue view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(ls:*),Bash(cat:*),Bash(mkdir:*)"
+
+  review:
+    name: Review PR (Opus)
+    needs: [implement, test]
+    # Review even when the testing stage failed — a PR with failing or missing tests is
+    # exactly what the reviewer should catch and block on.
+    if: ${{ always() && needs.implement.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find the PR for this issue
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          number=$(gh pr list --head "claude/issue-${{ github.event.issue.number }}" \
+            --json number --jq '.[0].number')
+          if [ -z "$number" ] || [ "$number" = "null" ]; then
+            echo "::error::No PR found for branch claude/issue-${{ github.event.issue.number }}"
+            exit 1
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      # Write for the same reason as the plan stage — the review is posted with
+      # `gh pr comment --body-file`. Still no Edit: reviewing must not change the code
+      # under review.
+      - name: Review with Claude Opus
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the REVIEW agent for this repository. Review pull request
+            #${{ steps.pr.outputs.number }} in ${{ github.repository }}.
+            Do NOT modify any code — review only.
+
+            1. Read the PR: gh pr view ${{ steps.pr.outputs.number }} --comments
+               and the diff: gh pr diff ${{ steps.pr.outputs.number }}
+            2. Read CLAUDE.md and .claude/skills/ — they define the project rules the
+               PR must follow. .claude/agents/jackpot-reviewer.md describes what this
+               project cares about most; apply it.
+            3. Check, in this order:
+               a. TESTS — new/changed functionality has unit tests written or updated
+                  for it, they cover the boundaries and the idempotent replay, and
+                  "mvn -B test" passes (skip this requirement only for pure docs/config
+                  changes). A note from the testing agent saying it could not get a test
+                  passing is a blocking finding.
+               b. DESIGN — contribution/reward variation is expressed as a strategy
+                  component resolved by enum, never as an if or switch inside a service;
+                  pool arithmetic lives on the Jackpot entity; config validation lives in
+                  the embeddable static factories.
+               c. CORRECTNESS — idempotency per betId on anything that mutates a pool;
+                  findByIdForUpdate inside @Transactional on any read-modify-write of a
+                  jackpot; BigDecimal money rounded through Money (no double, no bare
+                  divide, no equals on BigDecimal).
+               d. SECURITY & SECRETS — no injection, unsafe deserialization, broken
+                  validation; no hardcoded credentials, API keys, tokens, or passwords.
+               e. GUIDELINES — layering (controller → service → repository/messaging),
+                  constructor injection only, no Lombok, validation on request DTOs,
+                  config under app.*, INFO logging on every produce/consume and every
+                  contribution/reward decision, 4-space indent, no wildcard or unused
+                  imports, no commented-out code or leftover debug output, and README.md
+                  / CLAUDE.md updated when behaviour changed.
+            4. Post exactly ONE review comment on the PR with
+               gh pr comment ${{ steps.pr.outputs.number }} --body-file <file>
+               containing: a short summary, findings grouped by the five categories
+               above (or "OK" per category), file:line references for every finding,
+               and the LAST line of the comment must be exactly one of:
+                 CLAUDE-REVIEW-VERDICT: APPROVE
+                 CLAUDE-REVIEW-VERDICT: REQUEST_CHANGES
+            5. Verdict rules: REQUEST_CHANGES if ANY category has a blocking finding
+               (missing or failing tests, a branch where a strategy belongs, a lost
+               update, a non-idempotent mutation, any security risk, any exposed secret,
+               guideline violations). Minor optional suggestions alone do not block —
+               mention them and APPROVE.
+          claude_args: |
+            --model ${{ env.REVIEW_MODEL }}
+            --max-turns 30
+            --allowedTools "Read,Write,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git log:*),Bash(git diff:*),Bash(ls:*),Bash(cat:*)"
+
+      - name: Enforce review verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body=$(gh pr view ${{ steps.pr.outputs.number }} --json comments \
+            --jq '[.comments[].body | select(contains("CLAUDE-REVIEW-VERDICT:"))] | last')
+          if [ -z "$body" ] || [ "$body" = "null" ]; then
+            echo "::error::No Claude review verdict found on the PR."
+            exit 1
+          fi
+          printf '%s\n' "$body"
+          if printf '%s' "$body" | grep -q "CLAUDE-REVIEW-VERDICT: APPROVE"; then
+            echo "Claude approved the PR."
+          else
+            echo "::error::Claude requested changes — see the review comment on the PR."
+            exit 1
+          fi
+
+  # Interactive: respond to @claude mentions in comments on issues and PRs
+  mention:
+    name: Respond to @claude mention (Sonnet)
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --model ${{ env.CODING_MODEL }}
+            --max-turns 40
